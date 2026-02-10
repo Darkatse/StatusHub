@@ -23,7 +23,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: statushub.exe
             asset_name: statushub-windows-x86_64.exe
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             artifact_name: statushub
             asset_name: statushub-macos-x86_64
@@ -61,8 +61,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-
             ${{ runner.os }}-cargo-build-target-
 
       - name: Build release binary
