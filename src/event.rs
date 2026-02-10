@@ -38,6 +38,8 @@ pub struct DiscordStatusChangedEvent {
     pub current_status: DiscordStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<DiscordActivityContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reminder: Option<ReminderContext>,
     pub observed_at: DateTime<Utc>,
 }
 
@@ -52,6 +54,13 @@ pub struct DiscordActivityContext {
     pub steam_app_id: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReminderContext {
+    pub elapsed_seconds: u64,
+    pub interval_seconds: u64,
+    pub sequence: u64,
+}
+
 impl DiscordStatusChangedEvent {
     pub fn new(
         user_id: u64,
@@ -59,6 +68,7 @@ impl DiscordStatusChangedEvent {
         previous_status: Option<DiscordStatus>,
         current_status: DiscordStatus,
         activity: Option<DiscordActivityContext>,
+        reminder: Option<ReminderContext>,
     ) -> Self {
         Self {
             source: "discord.status",
@@ -67,11 +77,35 @@ impl DiscordStatusChangedEvent {
             previous_status,
             current_status,
             activity,
+            reminder,
             observed_at: Utc::now(),
         }
     }
 
     pub fn to_base_text(&self) -> String {
+        if let Some(reminder) = &self.reminder {
+            let elapsed = format_elapsed(reminder.elapsed_seconds);
+            return match self.guild_id {
+                Some(guild_id) => format!(
+                    "Discord status reminder: user {} in guild {} is still {}. Elapsed: {} (reminder #{}) at {}",
+                    self.user_id,
+                    guild_id,
+                    self.current_status,
+                    elapsed,
+                    reminder.sequence,
+                    self.observed_at.to_rfc3339()
+                ),
+                None => format!(
+                    "Discord status reminder: user {} is still {}. Elapsed: {} (reminder #{}) at {}",
+                    self.user_id,
+                    self.current_status,
+                    elapsed,
+                    reminder.sequence,
+                    self.observed_at.to_rfc3339()
+                ),
+            };
+        }
+
         let old = self
             .previous_status
             .map(|status| status.to_string())
@@ -97,6 +131,20 @@ impl DiscordStatusChangedEvent {
     }
 }
 
+fn format_elapsed(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes}m {secs}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {secs}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,9 +157,29 @@ mod tests {
             Some(DiscordStatus::Offline),
             DiscordStatus::Online,
             None,
+            None,
         );
         let text = event.to_base_text();
         assert!(text.contains("from offline to online"));
         assert!(text.contains("guild 99"));
+    }
+
+    #[test]
+    fn reminder_text_contains_elapsed() {
+        let event = DiscordStatusChangedEvent::new(
+            42,
+            None,
+            None,
+            DiscordStatus::Online,
+            None,
+            Some(ReminderContext {
+                elapsed_seconds: 1800,
+                interval_seconds: 1800,
+                sequence: 1,
+            }),
+        );
+        let text = event.to_base_text();
+        assert!(text.contains("status reminder"));
+        assert!(text.contains("30m"));
     }
 }

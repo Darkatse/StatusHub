@@ -1,21 +1,27 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as AnyhowContext, Result};
+use chrono::Utc;
 use serenity::all::{
     Activity, ActivityType, Client, Context, EventHandler, GatewayIntents, GuildId, OnlineStatus,
     Presence, Ready, UserId,
 };
 use serenity::async_trait;
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::MissedTickBehavior;
 use tracing::{error, info, warn};
 
-use crate::config::DiscordSettings;
-use crate::event::{DiscordActivityContext, DiscordStatus, DiscordStatusChangedEvent};
+use crate::config::{DiscordSettings, ReminderSettings};
+use crate::event::{
+    DiscordActivityContext, DiscordStatus, DiscordStatusChangedEvent, ReminderContext,
+};
 use crate::state_cache::PersistentStatusCache;
 use crate::webhook::WebhookSender;
 
 pub async fn run(
     settings: DiscordSettings,
+    reminder: ReminderSettings,
     sender: Arc<dyn WebhookSender>,
     state_cache: Option<Arc<PersistentStatusCache>>,
 ) -> Result<()> {
@@ -36,14 +42,31 @@ pub async fn run(
         );
     }
 
+    let runtime_state = Arc::new(Mutex::new(build_initial_runtime_state(
+        initial_status,
+        &reminder,
+    )));
+
     let handler = PresenceEventHandler {
         target_user_id,
         target_guild_id,
         emit_initial_status: settings.emit_initial_status,
-        tx,
-        last_status: Arc::new(Mutex::new(initial_status)),
+        reminder: reminder.clone(),
+        tx: tx.clone(),
+        runtime_state: runtime_state.clone(),
         state_cache,
         status_cache_key,
+    };
+
+    let reminder_loop = if reminder.enabled {
+        Some(tokio::spawn(run_reminder_loop(
+            reminder.clone(),
+            target_user_id.get(),
+            tx.clone(),
+            runtime_state,
+        )))
+    } else {
+        None
     };
 
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_PRESENCES;
@@ -59,6 +82,7 @@ pub async fn run(
                     info!(
                         user_id = event.user_id,
                         status = %event.current_status,
+                        reminder = event.reminder.is_some(),
                         "webhook delivered"
                     );
                 }
@@ -76,6 +100,9 @@ pub async fn run(
     info!(
         user_id = settings.user_id,
         guild_id = ?settings.guild_id,
+        reminder_enabled = reminder.enabled,
+        reminder_interval_minutes = reminder.interval_minutes,
+        reminder_steam_only = reminder.steam_only,
         "starting Discord presence monitor"
     );
     let client_result = client
@@ -83,17 +110,38 @@ pub async fn run(
         .await
         .context("Discord client exited unexpectedly");
 
+    if let Some(handle) = reminder_loop {
+        handle.abort();
+        let _ = handle.await;
+    }
+    drop(tx);
     drop(client);
     let _ = send_loop.await;
     client_result
+}
+
+#[derive(Debug, Clone)]
+struct RuntimePresenceState {
+    current_status: Option<DiscordStatus>,
+    current_guild_id: Option<u64>,
+    current_activity: Option<DiscordActivityContext>,
+    reminder_anchor: Option<ReminderAnchor>,
+}
+
+#[derive(Debug, Clone)]
+struct ReminderAnchor {
+    key: String,
+    started_at_unix: i64,
+    last_sequence: u64,
 }
 
 struct PresenceEventHandler {
     target_user_id: UserId,
     target_guild_id: Option<GuildId>,
     emit_initial_status: bool,
+    reminder: ReminderSettings,
     tx: mpsc::Sender<DiscordStatusChangedEvent>,
-    last_status: Arc<Mutex<Option<DiscordStatus>>>,
+    runtime_state: Arc<Mutex<RuntimePresenceState>>,
     state_cache: Option<Arc<PersistentStatusCache>>,
     status_cache_key: String,
 }
@@ -109,30 +157,53 @@ impl PresenceEventHandler {
         }
     }
 
-    async fn handle_status_update(
+    async fn handle_presence_update(
         &self,
         guild_id: Option<GuildId>,
         raw_status: OnlineStatus,
         activity: Option<DiscordActivityContext>,
     ) {
         let next_status = normalize_status(raw_status);
-        let mut last = self.last_status.lock().await;
-        let previous = *last;
+        let now = Utc::now();
 
-        if previous == Some(next_status) {
-            return;
-        }
-        if previous.is_none() && !self.emit_initial_status {
-            *last = Some(next_status);
-            drop(last);
+        let (previous, should_emit, status_changed) = {
+            let mut state = self.runtime_state.lock().await;
+            let previous = state.current_status;
+            let status_changed = previous != Some(next_status);
+
+            let next_anchor_key =
+                reminder_anchor_key(&self.reminder, next_status, activity.as_ref());
+            let current_anchor_key = state
+                .reminder_anchor
+                .as_ref()
+                .map(|anchor| anchor.key.as_str());
+            if current_anchor_key != next_anchor_key.as_deref() {
+                state.reminder_anchor = next_anchor_key.map(|key| ReminderAnchor {
+                    key,
+                    started_at_unix: now.timestamp(),
+                    last_sequence: 0,
+                });
+            }
+
+            state.current_status = Some(next_status);
+            state.current_guild_id = guild_id.map(GuildId::get);
+            state.current_activity = activity.clone();
+
+            let should_emit = status_changed && (self.emit_initial_status || previous.is_some());
+            (previous, should_emit, status_changed)
+        };
+
+        if status_changed {
             self.persist_status(next_status).await;
+        }
+
+        if previous.is_none() && !self.emit_initial_status {
             info!(status = %next_status, "captured initial status without emitting");
             return;
         }
-
-        *last = Some(next_status);
-        drop(last);
-        self.persist_status(next_status).await;
+        if !should_emit {
+            return;
+        }
 
         let event = DiscordStatusChangedEvent::new(
             self.target_user_id.get(),
@@ -140,6 +211,7 @@ impl PresenceEventHandler {
             previous,
             next_status,
             activity,
+            None,
         );
 
         if let Err(err) = self.tx.send(event).await {
@@ -171,10 +243,6 @@ impl EventHandler for PresenceEventHandler {
     }
 
     async fn cache_ready(&self, ctx: Context, guilds: Vec<GuildId>) {
-        if !self.emit_initial_status {
-            return;
-        }
-
         if let Some(target_guild_id) = self.target_guild_id {
             let initial_presence = ctx.cache.guild(target_guild_id).and_then(|guild| {
                 guild.presences.get(&self.target_user_id).map(|presence| {
@@ -185,7 +253,7 @@ impl EventHandler for PresenceEventHandler {
                 })
             });
             if let Some((status, activity)) = initial_presence {
-                self.handle_status_update(Some(target_guild_id), status, activity)
+                self.handle_presence_update(Some(target_guild_id), status, activity)
                     .await;
             }
             return;
@@ -201,7 +269,7 @@ impl EventHandler for PresenceEventHandler {
                 })
             });
             if let Some((status, activity)) = initial_presence {
-                self.handle_status_update(Some(guild_id), status, activity)
+                self.handle_presence_update(Some(guild_id), status, activity)
                     .await;
                 break;
             }
@@ -214,9 +282,104 @@ impl EventHandler for PresenceEventHandler {
         }
 
         let activity = extract_activity_context(&new_data.activities);
-
-        self.handle_status_update(new_data.guild_id, new_data.status, activity)
+        self.handle_presence_update(new_data.guild_id, new_data.status, activity)
             .await;
+    }
+}
+
+async fn run_reminder_loop(
+    settings: ReminderSettings,
+    target_user_id: u64,
+    tx: mpsc::Sender<DiscordStatusChangedEvent>,
+    runtime_state: Arc<Mutex<RuntimePresenceState>>,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(settings.check_interval_seconds));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let interval_seconds = settings.interval_seconds();
+
+    loop {
+        ticker.tick().await;
+        let maybe_event = {
+            let mut state = runtime_state.lock().await;
+            if state.current_status.is_none() || state.reminder_anchor.is_none() {
+                None
+            } else {
+                let current_status = state.current_status.unwrap_or(DiscordStatus::Unknown);
+                let guild_id = state.current_guild_id;
+                let activity = state.current_activity.clone();
+                let anchor = state
+                    .reminder_anchor
+                    .as_mut()
+                    .expect("anchor checked to exist");
+                let elapsed = Utc::now()
+                    .timestamp()
+                    .saturating_sub(anchor.started_at_unix) as u64;
+                let sequence = elapsed / interval_seconds;
+                if sequence == 0 || sequence <= anchor.last_sequence {
+                    None
+                } else {
+                    anchor.last_sequence = sequence;
+                    Some(DiscordStatusChangedEvent::new(
+                        target_user_id,
+                        guild_id,
+                        None,
+                        current_status,
+                        activity,
+                        Some(ReminderContext {
+                            elapsed_seconds: sequence.saturating_mul(interval_seconds),
+                            interval_seconds,
+                            sequence,
+                        }),
+                    ))
+                }
+            }
+        };
+
+        if let Some(event) = maybe_event {
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
+fn build_initial_runtime_state(
+    initial_status: Option<DiscordStatus>,
+    reminder: &ReminderSettings,
+) -> RuntimePresenceState {
+    let reminder_anchor = if reminder.enabled && !reminder.steam_only {
+        initial_status.map(|status| ReminderAnchor {
+            key: format!("status:{status}"),
+            started_at_unix: Utc::now().timestamp(),
+            last_sequence: 0,
+        })
+    } else {
+        None
+    };
+
+    RuntimePresenceState {
+        current_status: initial_status,
+        current_guild_id: None,
+        current_activity: None,
+        reminder_anchor,
+    }
+}
+
+fn reminder_anchor_key(
+    reminder: &ReminderSettings,
+    status: DiscordStatus,
+    activity: Option<&DiscordActivityContext>,
+) -> Option<String> {
+    if !reminder.enabled {
+        return None;
+    }
+
+    if reminder.steam_only {
+        activity
+            .and_then(|activity| activity.steam_app_id)
+            .map(|app_id| format!("steam:{app_id}:{status}"))
+    } else {
+        Some(format!("status:{status}"))
     }
 }
 
@@ -299,5 +462,26 @@ mod tests {
     fn status_cache_key_works() {
         assert_eq!(make_status_cache_key(1, Some(2)), "discord:1:2");
         assert_eq!(make_status_cache_key(1, None), "discord:1:*");
+    }
+
+    #[test]
+    fn reminder_anchor_key_steam_only() {
+        let settings = ReminderSettings {
+            enabled: true,
+            interval_minutes: 30,
+            steam_only: true,
+            check_interval_seconds: 30,
+        };
+        let key = reminder_anchor_key(
+            &settings,
+            DiscordStatus::Online,
+            Some(&DiscordActivityContext {
+                name: "Dota 2".to_string(),
+                details: None,
+                state: None,
+                steam_app_id: Some(570),
+            }),
+        );
+        assert_eq!(key.as_deref(), Some("steam:570:online"));
     }
 }

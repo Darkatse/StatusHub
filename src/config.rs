@@ -15,6 +15,8 @@ pub struct Settings {
     #[serde(default)]
     pub steam: SteamSettings,
     #[serde(default)]
+    pub reminder: ReminderSettings,
+    #[serde(default)]
     pub cache: CacheSettings,
     #[serde(default)]
     pub state_cache: StateCacheSettings,
@@ -35,6 +37,7 @@ impl Settings {
         self.discord.validate()?;
         self.webhook.validate()?;
         self.steam.validate()?;
+        self.reminder.validate()?;
         self.cache.validate()?;
         self.state_cache.validate()?;
         Ok(())
@@ -230,6 +233,53 @@ fn default_steam_db_cache_ttl_seconds() -> u64 {
     86400
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReminderSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_reminder_interval_minutes")]
+    pub interval_minutes: u64,
+    #[serde(default)]
+    pub steam_only: bool,
+    #[serde(default = "default_reminder_check_interval_seconds")]
+    pub check_interval_seconds: u64,
+}
+
+impl Default for ReminderSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: default_reminder_interval_minutes(),
+            steam_only: false,
+            check_interval_seconds: default_reminder_check_interval_seconds(),
+        }
+    }
+}
+
+impl ReminderSettings {
+    fn validate(&self) -> Result<()> {
+        if self.interval_minutes == 0 {
+            bail!("reminder.interval_minutes must be greater than 0");
+        }
+        if self.check_interval_seconds == 0 {
+            bail!("reminder.check_interval_seconds must be greater than 0");
+        }
+        Ok(())
+    }
+
+    pub fn interval_seconds(&self) -> u64 {
+        self.interval_minutes.saturating_mul(60)
+    }
+}
+
+fn default_reminder_interval_minutes() -> u64 {
+    30
+}
+
+fn default_reminder_check_interval_seconds() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheBackend {
@@ -338,6 +388,12 @@ mod tests {
             memory_cache_capacity = 128
             db_cache_ttl_seconds = 3600
 
+            [reminder]
+            enabled = true
+            interval_minutes = 30
+            steam_only = true
+            check_interval_seconds = 30
+
             [cache]
             backend = "sqlite"
             sqlite_path = "./tmp/cache.sqlite3"
@@ -353,6 +409,8 @@ mod tests {
         assert!(settings.discord.emit_initial_status);
         assert_eq!(settings.message.prefix.as_deref(), Some("[PREFIX]"));
         assert!(settings.steam.enabled);
+        assert!(settings.reminder.enabled);
+        assert!(settings.reminder.steam_only);
         assert!(matches!(settings.cache.backend, CacheBackend::Sqlite));
         assert!(settings.state_cache.enabled);
     }

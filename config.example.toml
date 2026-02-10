@@ -55,3 +55,13 @@ sqlite_path = "./data/statushub-cache.sqlite3"
 # 持久化状态缓存（建议保持启用）
 enabled = true
 path = "./data/status-state.json"
+
+[reminder]
+# 可选：状态持续超过间隔后重复发送提醒
+enabled = false
+# 例如 30 分钟 -> 在 30m、60m、90m... 触发
+interval_minutes = 30
+# true: 仅当为 Steam 游戏活动时触发提醒；false: 对所有状态触发
+steam_only = false
+# 内部检查周期（秒），越小越接近整点触发，但开销略高
+check_interval_seconds = 30

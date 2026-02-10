@@ -79,7 +79,7 @@ async fn run(
     state_cache: Option<Arc<PersistentStatusCache>>,
 ) -> anyhow::Result<()> {
     tokio::select! {
-        result = discord::run(settings.discord, sender, state_cache) => {
+        result = discord::run(settings.discord, settings.reminder, sender, state_cache) => {
             result
         }
         _ = tokio::signal::ctrl_c() => {

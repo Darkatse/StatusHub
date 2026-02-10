@@ -10,6 +10,7 @@ StatusHub 是一个 Rust 编写的状态桥接程序。当前实现：
 - 内置：Steam 信息内存缓存（TTL + 容量控制）
 - 可选：通用 SQLite 数据库缓存（命名空间键值模型，不限于 Steam）
 - 内置：持久化状态缓存（重启后可恢复上次状态）
+- 可选：按固定间隔重复发送状态提醒（可设仅 Steam）
 
 ## 设计目标
 
@@ -103,6 +104,22 @@ path = "./data/status-state.json"
 说明：
 - 启动时会恢复目标用户上一次状态，避免重启后重复触发错误状态变化
 - 写入文件的同时，如果开启了 SQLite 缓存，也会同步写入数据库
+
+### 5) 周期性提醒（30m / 1h / 1.5h ...）
+
+```toml
+[reminder]
+enabled = true
+interval_minutes = 30
+steam_only = true
+check_interval_seconds = 30
+```
+
+说明：
+- `enabled=true` 后，状态持续超过间隔会重复提醒
+- `interval_minutes=30` 时，会在 30m、60m、90m... 推送
+- `steam_only=true` 时，仅在检测到 Steam 游戏活动（有 app id）时触发
+- 提醒消息会在 `text` 中附带已持续时长（elapsed）与提醒序号
 
 ## 事件示例（generic_json）
 
