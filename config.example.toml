@@ -1,0 +1,22 @@
+[discord]
+bot_token = "YOUR_DISCORD_BOT_TOKEN"
+user_id = 123456789012345678
+# guild_id 可选。建议填写，避免同一用户在多个服务器导致重复事件。
+guild_id = 987654321098765432
+# true: 启动时尝试推送当前状态；false: 只在后续状态变化时推送。
+emit_initial_status = false
+
+[webhook]
+# 可选: "openclaw_wake" | "generic_json"
+mode = "openclaw_wake"
+url = "http://127.0.0.1:18789/hooks/wake"
+token = "YOUR_OPENCLAW_HOOK_TOKEN"
+timeout_seconds = 10
+
+[webhook.openclaw]
+# 可选: "now" | "next-heartbeat"
+wake_mode = "now"
+
+[webhook.headers]
+# 可选自定义请求头，会和 token 一起发送
+x-statushub-source = "discord-presence-monitor"
