@@ -106,6 +106,24 @@ impl DiscordStatusChangedEvent {
             };
         }
 
+        if self.previous_status == Some(self.current_status) && self.activity.is_some() {
+            return match self.guild_id {
+                Some(guild_id) => format!(
+                    "Discord activity changed: user {} in guild {} (status {}) at {}",
+                    self.user_id,
+                    guild_id,
+                    self.current_status,
+                    self.observed_at.to_rfc3339()
+                ),
+                None => format!(
+                    "Discord activity changed: user {} (status {}) at {}",
+                    self.user_id,
+                    self.current_status,
+                    self.observed_at.to_rfc3339()
+                ),
+            };
+        }
+
         let old = self
             .previous_status
             .map(|status| status.to_string())
@@ -181,5 +199,24 @@ mod tests {
         let text = event.to_base_text();
         assert!(text.contains("status reminder"));
         assert!(text.contains("30m"));
+    }
+
+    #[test]
+    fn activity_change_text_for_same_status() {
+        let event = DiscordStatusChangedEvent::new(
+            42,
+            None,
+            Some(DiscordStatus::Online),
+            DiscordStatus::Online,
+            Some(DiscordActivityContext {
+                name: "Cyberpunk 2077".to_string(),
+                details: None,
+                state: None,
+                steam_app_id: Some(1091500),
+            }),
+            None,
+        );
+        let text = event.to_base_text();
+        assert!(text.contains("activity changed"));
     }
 }

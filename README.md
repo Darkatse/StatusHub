@@ -38,6 +38,7 @@ Copy-Item .\config.example.toml .\config.toml
 - `discord.user_id`
 - `discord.guild_id`（建议填写）
 - `discord.emit_on_activity_change`（建议 `true`）
+- `discord.rich_presence_only`（若只想监听 Rich Presence，设为 `true`）
 - `webhook.url`
 - `webhook.token`（若 webhook 要求鉴权）
 
@@ -71,10 +72,13 @@ suffix = "请根据以上信息执行自动化流程。"
 ```toml
 [discord]
 emit_on_activity_change = true
+rich_presence_only = false
 ```
 
 说明：
 - 开启后，状态不变但 Rich Presence 变化（如游戏、VSCode Presence）也会触发 webhook
+- `rich_presence_only=true` 时，仅 Rich Presence 相关变化会触发 webhook，普通在线/离线状态变化不会推送
+- `rich_presence_only=true` 需要同时 `emit_on_activity_change=true`
 - OpenClaw `text` 会附加 `Activity / Details / State`，便于观察 Rich Presence 内容
 
 ### 3) Steam 游戏信息增强
@@ -139,6 +143,7 @@ check_interval_seconds = 30
 
 如果你使用 VSCode Discord Presence 插件但没有触发：
 - 确认 `discord.emit_on_activity_change = true`
+- 若你开启了 `discord.rich_presence_only = true`，确认该时刻确实有活动（`activities_count > 0`）
 - 确认 Bot 已启用并使用 `Presence Intent`
 - 确认目标账号在 Discord 用户设置中开启了活动展示（Display current activity）
 - 确认插件成功连接 Discord RPC（本机 Discord 客户端在运行）

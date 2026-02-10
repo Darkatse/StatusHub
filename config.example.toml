@@ -7,6 +7,8 @@ guild_id = 987654321098765432
 emit_initial_status = false
 # true: Rich Presence（活动）变化也触发 webhook（推荐开启）
 emit_on_activity_change = true
+# true: 仅检测 Rich Presence，普通在线/离线状态变化不发送 webhook（需要 emit_on_activity_change=true）
+rich_presence_only = false
 
 [webhook]
 # 可选: "openclaw_wake" | "generic_json"

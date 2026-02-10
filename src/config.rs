@@ -53,6 +53,8 @@ pub struct DiscordSettings {
     pub emit_initial_status: bool,
     #[serde(default = "default_emit_on_activity_change")]
     pub emit_on_activity_change: bool,
+    #[serde(default)]
+    pub rich_presence_only: bool,
 }
 
 impl DiscordSettings {
@@ -65,6 +67,11 @@ impl DiscordSettings {
         }
         if self.guild_id.is_some_and(|guild_id| guild_id == 0) {
             bail!("discord.guild_id must be greater than 0 when provided");
+        }
+        if self.rich_presence_only && !self.emit_on_activity_change {
+            bail!(
+                "discord.emit_on_activity_change must be true when discord.rich_presence_only=true"
+            );
         }
         Ok(())
     }
@@ -370,6 +377,7 @@ mod tests {
             user_id = 123456789
             guild_id = 987654321
             emit_initial_status = true
+            rich_presence_only = true
 
             [webhook]
             mode = "openclaw_wake"
@@ -414,6 +422,7 @@ mod tests {
         assert_eq!(settings.discord.user_id, 123456789);
         assert!(settings.discord.emit_initial_status);
         assert!(settings.discord.emit_on_activity_change);
+        assert!(settings.discord.rich_presence_only);
         assert_eq!(settings.message.prefix.as_deref(), Some("[PREFIX]"));
         assert!(settings.steam.enabled);
         assert!(settings.reminder.enabled);
@@ -436,5 +445,23 @@ mod tests {
         let settings: Settings = toml::from_str(raw).expect("config should parse");
         let err = settings.validate().expect_err("config should fail");
         assert!(err.to_string().contains("webhook.url"));
+    }
+
+    #[test]
+    fn reject_rich_presence_only_without_activity_trigger() {
+        let raw = r#"
+            [discord]
+            bot_token = "discord-token"
+            user_id = 123456789
+            rich_presence_only = true
+            emit_on_activity_change = false
+
+            [webhook]
+            url = "http://127.0.0.1:18789/hooks/wake"
+        "#;
+
+        let settings: Settings = toml::from_str(raw).expect("config should parse");
+        let err = settings.validate().expect_err("config should fail");
+        assert!(err.to_string().contains("emit_on_activity_change"));
     }
 }

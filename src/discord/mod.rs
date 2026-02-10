@@ -44,6 +44,7 @@ pub async fn run(
 
     let runtime_state = Arc::new(Mutex::new(build_initial_runtime_state(
         initial_status,
+        settings.rich_presence_only,
         &reminder,
     )));
 
@@ -52,6 +53,7 @@ pub async fn run(
         target_guild_id,
         emit_initial_status: settings.emit_initial_status,
         emit_on_activity_change: settings.emit_on_activity_change,
+        rich_presence_only: settings.rich_presence_only,
         reminder: reminder.clone(),
         tx: tx.clone(),
         runtime_state: runtime_state.clone(),
@@ -107,6 +109,7 @@ pub async fn run(
         user_id = settings.user_id,
         guild_id = ?settings.guild_id,
         emit_on_activity_change = settings.emit_on_activity_change,
+        rich_presence_only = settings.rich_presence_only,
         reminder_enabled = reminder.enabled,
         reminder_interval_minutes = reminder.interval_minutes,
         reminder_steam_only = reminder.steam_only,
@@ -148,6 +151,7 @@ struct PresenceEventHandler {
     target_guild_id: Option<GuildId>,
     emit_initial_status: bool,
     emit_on_activity_change: bool,
+    rich_presence_only: bool,
     reminder: ReminderSettings,
     tx: mpsc::Sender<DiscordStatusChangedEvent>,
     runtime_state: Arc<Mutex<RuntimePresenceState>>,
@@ -175,6 +179,7 @@ impl PresenceEventHandler {
     ) {
         let next_status = normalize_status(raw_status);
         let now = Utc::now();
+        let has_activity = !activity_fingerprint.is_empty();
 
         let (previous, should_emit, status_changed) = {
             let mut state = self.runtime_state.lock().await;
@@ -186,8 +191,12 @@ impl PresenceEventHandler {
                 .map(|v| v != &activity_fingerprint)
                 .unwrap_or(!activity_fingerprint.is_empty());
 
-            let next_anchor_key =
-                reminder_anchor_key(&self.reminder, next_status, activity.as_ref());
+            let next_anchor_key = reminder_anchor_key(
+                &self.reminder,
+                self.rich_presence_only,
+                next_status,
+                activity.as_ref(),
+            );
             let current_anchor_key = state
                 .reminder_anchor
                 .as_ref()
@@ -209,6 +218,8 @@ impl PresenceEventHandler {
                 status_changed,
                 activity_changed,
                 self.emit_on_activity_change,
+                self.rich_presence_only,
+                has_activity,
                 self.emit_initial_status,
                 previous.is_some(),
             );
@@ -389,9 +400,10 @@ async fn run_reminder_loop(
 
 fn build_initial_runtime_state(
     initial_status: Option<DiscordStatus>,
+    rich_presence_only: bool,
     reminder: &ReminderSettings,
 ) -> RuntimePresenceState {
-    let reminder_anchor = if reminder.enabled && !reminder.steam_only {
+    let reminder_anchor = if reminder.enabled && !reminder.steam_only && !rich_presence_only {
         initial_status.map(|status| ReminderAnchor {
             key: format!("status:{status}"),
             started_at_unix: Utc::now().timestamp(),
@@ -412,10 +424,15 @@ fn build_initial_runtime_state(
 
 fn reminder_anchor_key(
     reminder: &ReminderSettings,
+    rich_presence_only: bool,
     status: DiscordStatus,
     activity: Option<&DiscordActivityContext>,
 ) -> Option<String> {
     if !reminder.enabled {
+        return None;
+    }
+
+    if rich_presence_only && activity.is_none() {
         return None;
     }
 
@@ -546,10 +563,16 @@ fn should_emit_presence_event(
     status_changed: bool,
     activity_changed: bool,
     emit_on_activity_change: bool,
+    rich_presence_only: bool,
+    has_activity: bool,
     emit_initial_status: bool,
     has_previous_status: bool,
 ) -> bool {
-    let trigger_change = status_changed || (emit_on_activity_change && activity_changed);
+    let trigger_change = if rich_presence_only {
+        emit_on_activity_change && activity_changed && has_activity
+    } else {
+        status_changed || (emit_on_activity_change && activity_changed)
+    };
     trigger_change && (emit_initial_status || has_previous_status)
 }
 
@@ -593,6 +616,7 @@ mod tests {
         };
         let key = reminder_anchor_key(
             &settings,
+            false,
             DiscordStatus::Online,
             Some(&DiscordActivityContext {
                 name: "Dota 2".to_string(),
@@ -606,8 +630,22 @@ mod tests {
 
     #[test]
     fn emit_on_activity_change_when_enabled() {
-        assert!(should_emit_presence_event(false, true, true, false, true));
-        assert!(!should_emit_presence_event(false, true, false, false, true));
+        assert!(should_emit_presence_event(
+            false, true, true, false, true, false, true
+        ));
+        assert!(!should_emit_presence_event(
+            false, true, false, false, true, false, true
+        ));
+    }
+
+    #[test]
+    fn rich_presence_only_blocks_status_only_events() {
+        assert!(!should_emit_presence_event(
+            true, false, true, true, false, false, true
+        ));
+        assert!(should_emit_presence_event(
+            false, true, true, true, true, false, true
+        ));
     }
 
     #[test]
