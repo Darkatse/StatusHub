@@ -1,9 +1,9 @@
 use std::fmt::{Display, Formatter};
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiscordStatus {
     Online,
@@ -27,7 +27,7 @@ impl Display for DiscordStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordStatusChangedEvent {
     pub source: &'static str,
     pub user_id: u64,
@@ -41,7 +41,7 @@ pub struct DiscordStatusChangedEvent {
     pub observed_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscordActivityContext {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

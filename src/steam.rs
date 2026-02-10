@@ -1,11 +1,17 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+use tracing::warn;
 
+use crate::cache::CacheService;
 use crate::config::SteamSettings;
+
+const STEAM_GAME_DETAILS_NAMESPACE: &str = "steam.game_details";
 
 #[derive(Debug, Clone)]
 pub struct SteamClient {
@@ -13,9 +19,14 @@ pub struct SteamClient {
     api_key: Option<String>,
     language: String,
     description_max_chars: usize,
+    db_cache_ttl_seconds: u64,
+    memory_cache_ttl: Duration,
+    memory_cache_capacity: usize,
+    memory_cache: Arc<RwLock<HashMap<u32, MemoryCacheEntry>>>,
+    cache_service: Option<Arc<CacheService>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteamGameDetails {
     pub app_id: u32,
     pub name: String,
@@ -23,8 +34,14 @@ pub struct SteamGameDetails {
     pub current_players: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
+struct MemoryCacheEntry {
+    value: SteamGameDetails,
+    expires_at: Instant,
+}
+
 impl SteamClient {
-    pub fn new(settings: &SteamSettings) -> Result<Self> {
+    pub fn new(settings: &SteamSettings, cache_service: Option<Arc<CacheService>>) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(settings.timeout_seconds))
             .user_agent("statushub/0.1")
@@ -36,10 +53,34 @@ impl SteamClient {
             api_key: settings.api_key.clone(),
             language: settings.language.clone(),
             description_max_chars: settings.description_max_chars,
+            db_cache_ttl_seconds: settings.db_cache_ttl_seconds,
+            memory_cache_ttl: Duration::from_secs(settings.memory_cache_ttl_seconds),
+            memory_cache_capacity: settings.memory_cache_capacity,
+            memory_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_service,
         })
     }
 
     pub async fn fetch_game_details(&self, app_id: u32) -> Result<Option<SteamGameDetails>> {
+        if let Some(cached) = self.get_from_memory_cache(app_id).await {
+            return Ok(Some(cached));
+        }
+
+        if let Some(cached) = self.get_from_database_cache(app_id).await {
+            self.put_to_memory_cache(app_id, cached.clone()).await;
+            return Ok(Some(cached));
+        }
+
+        let fetched = self.fetch_game_details_from_api(app_id).await?;
+        if let Some(details) = fetched.as_ref() {
+            self.put_to_memory_cache(app_id, details.clone()).await;
+            self.put_to_database_cache(app_id, details).await;
+        }
+
+        Ok(fetched)
+    }
+
+    async fn fetch_game_details_from_api(&self, app_id: u32) -> Result<Option<SteamGameDetails>> {
         let mut url = Url::parse("https://store.steampowered.com/api/appdetails")
             .context("failed to parse Steam appdetails URL")?;
         url.query_pairs_mut()
@@ -111,6 +152,68 @@ impl SteamClient {
             .context("failed to parse Steam current players response")?;
 
         Ok(response.response.player_count)
+    }
+
+    async fn get_from_memory_cache(&self, app_id: u32) -> Option<SteamGameDetails> {
+        let mut cache = self.memory_cache.write().await;
+        let cached = cache.get(&app_id).cloned()?;
+        if cached.expires_at <= Instant::now() {
+            cache.remove(&app_id);
+            return None;
+        }
+        Some(cached.value)
+    }
+
+    async fn put_to_memory_cache(&self, app_id: u32, value: SteamGameDetails) {
+        let mut cache = self.memory_cache.write().await;
+        cache.retain(|_, entry| entry.expires_at > Instant::now());
+
+        if cache.len() >= self.memory_cache_capacity && !cache.contains_key(&app_id) {
+            if let Some(evict_key) = cache.keys().next().copied() {
+                cache.remove(&evict_key);
+            }
+        }
+
+        cache.insert(
+            app_id,
+            MemoryCacheEntry {
+                value,
+                expires_at: Instant::now() + self.memory_cache_ttl,
+            },
+        );
+    }
+
+    async fn get_from_database_cache(&self, app_id: u32) -> Option<SteamGameDetails> {
+        let cache_service = self.cache_service.as_ref()?;
+        let key = app_id.to_string();
+        match cache_service
+            .get_json::<SteamGameDetails>(STEAM_GAME_DETAILS_NAMESPACE, &key)
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                warn!(app_id, error = ?err, "failed to read Steam DB cache");
+                None
+            }
+        }
+    }
+
+    async fn put_to_database_cache(&self, app_id: u32, value: &SteamGameDetails) {
+        let Some(cache_service) = self.cache_service.as_ref() else {
+            return;
+        };
+        let key = app_id.to_string();
+        if let Err(err) = cache_service
+            .set_json(
+                STEAM_GAME_DETAILS_NAMESPACE,
+                &key,
+                value,
+                Some(self.db_cache_ttl_seconds),
+            )
+            .await
+        {
+            warn!(app_id, error = ?err, "failed to write Steam DB cache");
+        }
     }
 }
 

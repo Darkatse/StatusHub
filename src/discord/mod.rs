@@ -11,19 +11,39 @@ use tracing::{error, info, warn};
 
 use crate::config::DiscordSettings;
 use crate::event::{DiscordActivityContext, DiscordStatus, DiscordStatusChangedEvent};
+use crate::state_cache::PersistentStatusCache;
 use crate::webhook::WebhookSender;
 
-pub async fn run(settings: DiscordSettings, sender: Arc<dyn WebhookSender>) -> Result<()> {
+pub async fn run(
+    settings: DiscordSettings,
+    sender: Arc<dyn WebhookSender>,
+    state_cache: Option<Arc<PersistentStatusCache>>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<DiscordStatusChangedEvent>(256);
     let target_user_id = UserId::new(settings.user_id);
     let target_guild_id = settings.guild_id.map(GuildId::new);
+    let status_cache_key = make_status_cache_key(settings.user_id, settings.guild_id);
+    let initial_status = if let Some(cache) = state_cache.as_ref() {
+        cache.get_status(&status_cache_key).await
+    } else {
+        None
+    };
+    if let Some(status) = initial_status {
+        info!(
+            key = %status_cache_key,
+            status = %status,
+            "restored persisted status cache"
+        );
+    }
 
     let handler = PresenceEventHandler {
         target_user_id,
         target_guild_id,
         emit_initial_status: settings.emit_initial_status,
         tx,
-        last_status: Arc::new(Mutex::new(None)),
+        last_status: Arc::new(Mutex::new(initial_status)),
+        state_cache,
+        status_cache_key,
     };
 
     let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_PRESENCES;
@@ -74,6 +94,8 @@ struct PresenceEventHandler {
     emit_initial_status: bool,
     tx: mpsc::Sender<DiscordStatusChangedEvent>,
     last_status: Arc<Mutex<Option<DiscordStatus>>>,
+    state_cache: Option<Arc<PersistentStatusCache>>,
+    status_cache_key: String,
 }
 
 impl PresenceEventHandler {
@@ -102,12 +124,15 @@ impl PresenceEventHandler {
         }
         if previous.is_none() && !self.emit_initial_status {
             *last = Some(next_status);
+            drop(last);
+            self.persist_status(next_status).await;
             info!(status = %next_status, "captured initial status without emitting");
             return;
         }
 
         *last = Some(next_status);
         drop(last);
+        self.persist_status(next_status).await;
 
         let event = DiscordStatusChangedEvent::new(
             self.target_user_id.get(),
@@ -119,6 +144,18 @@ impl PresenceEventHandler {
 
         if let Err(err) = self.tx.send(event).await {
             warn!(error = ?err, "status event channel closed");
+        }
+    }
+
+    async fn persist_status(&self, status: DiscordStatus) {
+        let Some(state_cache) = self.state_cache.as_ref() else {
+            return;
+        };
+        if let Err(err) = state_cache
+            .set_status(self.status_cache_key.clone(), status)
+            .await
+        {
+            warn!(error = ?err, "failed to persist status cache");
         }
     }
 }
@@ -227,6 +264,13 @@ fn parse_steam_asset_app_id(raw: &str) -> Option<u32> {
     raw.strip_prefix("steam:")?.parse::<u32>().ok()
 }
 
+fn make_status_cache_key(user_id: u64, guild_id: Option<u64>) -> String {
+    match guild_id {
+        Some(guild_id) => format!("discord:{user_id}:{guild_id}"),
+        None => format!("discord:{user_id}:*"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +293,11 @@ mod tests {
         assert_eq!(parse_steam_asset_app_id("steam:570"), Some(570));
         assert_eq!(parse_steam_asset_app_id("foo"), None);
         assert_eq!(parse_steam_asset_app_id("steam:not-number"), None);
+    }
+
+    #[test]
+    fn status_cache_key_works() {
+        assert_eq!(make_status_cache_key(1, Some(2)), "discord:1:2");
+        assert_eq!(make_status_cache_key(1, None), "discord:1:*");
     }
 }

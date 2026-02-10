@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use tracing::warn;
 
+use crate::cache::CacheService;
 use crate::config::{MessageTemplateSettings, SteamSettings, WebhookSettings};
 use crate::event::DiscordStatusChangedEvent;
 use crate::steam::SteamClient;
@@ -23,9 +26,10 @@ impl OpenClawWakeSender {
         settings: &WebhookSettings,
         message: &MessageTemplateSettings,
         steam: &SteamSettings,
+        cache_service: Arc<CacheService>,
     ) -> Result<Self> {
         let steam_client = if steam.enabled {
-            Some(SteamClient::new(steam)?)
+            Some(SteamClient::new(steam, Some(cache_service))?)
         } else {
             None
         };

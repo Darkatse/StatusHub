@@ -38,3 +38,20 @@ language = "schinese"
 description_max_chars = 240
 # Steam API 请求超时（秒）
 timeout_seconds = 8
+# Steam 内存缓存 TTL（秒）
+memory_cache_ttl_seconds = 1800
+# Steam 内存缓存容量（最大条目数）
+memory_cache_capacity = 512
+# Steam 数据写入数据库缓存时的 TTL（秒）
+db_cache_ttl_seconds = 86400
+
+[cache]
+# 可选：none | sqlite
+backend = "none"
+# 仅 backend=sqlite 时生效
+sqlite_path = "./data/statushub-cache.sqlite3"
+
+[state_cache]
+# 持久化状态缓存（建议保持启用）
+enabled = true
+path = "./data/status-state.json"

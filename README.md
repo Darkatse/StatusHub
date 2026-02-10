@@ -7,6 +7,9 @@ StatusHub 是一个 Rust 编写的状态桥接程序。当前实现：
 - 原生支持 OpenClaw `/hooks/wake`，并提供通用 JSON webhook 模式
 - 可选：检测 Steam 游戏活动并附加游戏简介
 - 可选：自定义 webhook `text` 的头部/尾部提示词
+- 内置：Steam 信息内存缓存（TTL + 容量控制）
+- 可选：通用 SQLite 数据库缓存（命名空间键值模型，不限于 Steam）
+- 内置：持久化状态缓存（重启后可恢复上次状态）
 
 ## 设计目标
 
@@ -70,9 +73,36 @@ api_key = "YOUR_STEAM_WEB_API_KEY"
 language = "schinese"
 description_max_chars = 240
 timeout_seconds = 8
+memory_cache_ttl_seconds = 1800
+memory_cache_capacity = 512
+db_cache_ttl_seconds = 86400
 ```
 
 当检测到 Discord 活动里存在 Steam app id（如 `steam:570`）时，会调用 Steam appdetails API 获取游戏名和简介，并附加到 OpenClaw webhook 的 `text` 中。若配置了 `api_key`，还会额外获取当前在线人数。
+
+### 3) 可选数据库缓存（通用）
+
+```toml
+[cache]
+backend = "sqlite"
+sqlite_path = "./data/statushub-cache.sqlite3"
+```
+
+说明：
+- `backend = "none"` 时禁用数据库缓存
+- `backend = "sqlite"` 时启用通用缓存服务（当前用于 Steam 数据与状态缓存，后续模块可复用）
+
+### 4) 持久化状态缓存
+
+```toml
+[state_cache]
+enabled = true
+path = "./data/status-state.json"
+```
+
+说明：
+- 启动时会恢复目标用户上一次状态，避免重启后重复触发错误状态变化
+- 写入文件的同时，如果开启了 SQLite 缓存，也会同步写入数据库
 
 ## 事件示例（generic_json）
 

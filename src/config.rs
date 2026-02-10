@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -14,6 +14,10 @@ pub struct Settings {
     pub message: MessageTemplateSettings,
     #[serde(default)]
     pub steam: SteamSettings,
+    #[serde(default)]
+    pub cache: CacheSettings,
+    #[serde(default)]
+    pub state_cache: StateCacheSettings,
 }
 
 impl Settings {
@@ -31,6 +35,8 @@ impl Settings {
         self.discord.validate()?;
         self.webhook.validate()?;
         self.steam.validate()?;
+        self.cache.validate()?;
+        self.state_cache.validate()?;
         Ok(())
     }
 }
@@ -146,6 +152,12 @@ pub struct SteamSettings {
     pub description_max_chars: usize,
     #[serde(default = "default_steam_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default = "default_steam_memory_cache_ttl_seconds")]
+    pub memory_cache_ttl_seconds: u64,
+    #[serde(default = "default_steam_memory_cache_capacity")]
+    pub memory_cache_capacity: usize,
+    #[serde(default = "default_steam_db_cache_ttl_seconds")]
+    pub db_cache_ttl_seconds: u64,
 }
 
 impl Default for SteamSettings {
@@ -156,6 +168,9 @@ impl Default for SteamSettings {
             language: default_steam_language(),
             description_max_chars: default_steam_description_max_chars(),
             timeout_seconds: default_steam_timeout_seconds(),
+            memory_cache_ttl_seconds: default_steam_memory_cache_ttl_seconds(),
+            memory_cache_capacity: default_steam_memory_cache_capacity(),
+            db_cache_ttl_seconds: default_steam_db_cache_ttl_seconds(),
         }
     }
 }
@@ -178,6 +193,15 @@ impl SteamSettings {
         if self.timeout_seconds == 0 {
             bail!("steam.timeout_seconds must be greater than 0");
         }
+        if self.memory_cache_ttl_seconds == 0 {
+            bail!("steam.memory_cache_ttl_seconds must be greater than 0");
+        }
+        if self.memory_cache_capacity == 0 {
+            bail!("steam.memory_cache_capacity must be greater than 0");
+        }
+        if self.db_cache_ttl_seconds == 0 {
+            bail!("steam.db_cache_ttl_seconds must be greater than 0");
+        }
         Ok(())
     }
 }
@@ -192,6 +216,90 @@ fn default_steam_description_max_chars() -> usize {
 
 fn default_steam_timeout_seconds() -> u64 {
     8
+}
+
+fn default_steam_memory_cache_ttl_seconds() -> u64 {
+    1800
+}
+
+fn default_steam_memory_cache_capacity() -> usize {
+    512
+}
+
+fn default_steam_db_cache_ttl_seconds() -> u64 {
+    86400
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheBackend {
+    #[default]
+    None,
+    Sqlite,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheSettings {
+    #[serde(default)]
+    pub backend: CacheBackend,
+    #[serde(default = "default_cache_sqlite_path")]
+    pub sqlite_path: PathBuf,
+}
+
+impl Default for CacheSettings {
+    fn default() -> Self {
+        Self {
+            backend: CacheBackend::None,
+            sqlite_path: default_cache_sqlite_path(),
+        }
+    }
+}
+
+impl CacheSettings {
+    fn validate(&self) -> Result<()> {
+        if matches!(self.backend, CacheBackend::Sqlite) && self.sqlite_path.as_os_str().is_empty() {
+            bail!("cache.sqlite_path cannot be empty when cache.backend=sqlite");
+        }
+        Ok(())
+    }
+}
+
+fn default_cache_sqlite_path() -> PathBuf {
+    PathBuf::from("./data/statushub-cache.sqlite3")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StateCacheSettings {
+    #[serde(default = "default_state_cache_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_state_cache_path")]
+    pub path: PathBuf,
+}
+
+impl Default for StateCacheSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_state_cache_enabled(),
+            path: default_state_cache_path(),
+        }
+    }
+}
+
+impl StateCacheSettings {
+    fn validate(&self) -> Result<()> {
+        if self.enabled && self.path.as_os_str().is_empty() {
+            bail!("state_cache.path cannot be empty when state_cache.enabled=true");
+        }
+        Ok(())
+    }
+}
+
+fn default_state_cache_enabled() -> bool {
+    true
+}
+
+fn default_state_cache_path() -> PathBuf {
+    PathBuf::from("./data/status-state.json")
 }
 
 #[cfg(test)]
@@ -226,6 +334,17 @@ mod tests {
             language = "schinese"
             description_max_chars = 200
             timeout_seconds = 5
+            memory_cache_ttl_seconds = 60
+            memory_cache_capacity = 128
+            db_cache_ttl_seconds = 3600
+
+            [cache]
+            backend = "sqlite"
+            sqlite_path = "./tmp/cache.sqlite3"
+
+            [state_cache]
+            enabled = true
+            path = "./tmp/state.json"
         "#;
 
         let settings: Settings = toml::from_str(raw).expect("config should parse");
@@ -234,6 +353,8 @@ mod tests {
         assert!(settings.discord.emit_initial_status);
         assert_eq!(settings.message.prefix.as_deref(), Some("[PREFIX]"));
         assert!(settings.steam.enabled);
+        assert!(matches!(settings.cache.backend, CacheBackend::Sqlite));
+        assert!(settings.state_cache.enabled);
     }
 
     #[test]
