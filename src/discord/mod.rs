@@ -10,7 +10,7 @@ use serenity::all::{
 use serenity::async_trait;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::MissedTickBehavior;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::{DiscordSettings, ReminderSettings};
 use crate::event::{
@@ -51,6 +51,7 @@ pub async fn run(
         target_user_id,
         target_guild_id,
         emit_initial_status: settings.emit_initial_status,
+        emit_on_activity_change: settings.emit_on_activity_change,
         reminder: reminder.clone(),
         tx: tx.clone(),
         runtime_state: runtime_state.clone(),
@@ -79,9 +80,14 @@ pub async fn run(
         while let Some(event) = rx.recv().await {
             match sender.send(&event).await {
                 Ok(()) => {
+                    let activity_name = event.activity.as_ref().map(|a| a.name.as_str());
+                    let steam_app_id = event.activity.as_ref().and_then(|a| a.steam_app_id);
                     info!(
                         user_id = event.user_id,
                         status = %event.current_status,
+                        has_activity = event.activity.is_some(),
+                        activity_name = ?activity_name,
+                        steam_app_id = ?steam_app_id,
                         reminder = event.reminder.is_some(),
                         "webhook delivered"
                     );
@@ -100,6 +106,7 @@ pub async fn run(
     info!(
         user_id = settings.user_id,
         guild_id = ?settings.guild_id,
+        emit_on_activity_change = settings.emit_on_activity_change,
         reminder_enabled = reminder.enabled,
         reminder_interval_minutes = reminder.interval_minutes,
         reminder_steam_only = reminder.steam_only,
@@ -125,6 +132,7 @@ struct RuntimePresenceState {
     current_status: Option<DiscordStatus>,
     current_guild_id: Option<u64>,
     current_activity: Option<DiscordActivityContext>,
+    current_activity_fingerprint: Option<String>,
     reminder_anchor: Option<ReminderAnchor>,
 }
 
@@ -139,6 +147,7 @@ struct PresenceEventHandler {
     target_user_id: UserId,
     target_guild_id: Option<GuildId>,
     emit_initial_status: bool,
+    emit_on_activity_change: bool,
     reminder: ReminderSettings,
     tx: mpsc::Sender<DiscordStatusChangedEvent>,
     runtime_state: Arc<Mutex<RuntimePresenceState>>,
@@ -162,6 +171,7 @@ impl PresenceEventHandler {
         guild_id: Option<GuildId>,
         raw_status: OnlineStatus,
         activity: Option<DiscordActivityContext>,
+        activity_fingerprint: String,
     ) {
         let next_status = normalize_status(raw_status);
         let now = Utc::now();
@@ -170,6 +180,11 @@ impl PresenceEventHandler {
             let mut state = self.runtime_state.lock().await;
             let previous = state.current_status;
             let status_changed = previous != Some(next_status);
+            let activity_changed = state
+                .current_activity_fingerprint
+                .as_ref()
+                .map(|v| v != &activity_fingerprint)
+                .unwrap_or(!activity_fingerprint.is_empty());
 
             let next_anchor_key =
                 reminder_anchor_key(&self.reminder, next_status, activity.as_ref());
@@ -188,8 +203,15 @@ impl PresenceEventHandler {
             state.current_status = Some(next_status);
             state.current_guild_id = guild_id.map(GuildId::get);
             state.current_activity = activity.clone();
+            state.current_activity_fingerprint = Some(activity_fingerprint.clone());
 
-            let should_emit = status_changed && (self.emit_initial_status || previous.is_some());
+            let should_emit = should_emit_presence_event(
+                status_changed,
+                activity_changed,
+                self.emit_on_activity_change,
+                self.emit_initial_status,
+                previous.is_some(),
+            );
             (previous, should_emit, status_changed)
         };
 
@@ -249,12 +271,18 @@ impl EventHandler for PresenceEventHandler {
                     (
                         presence.status,
                         extract_activity_context(&presence.activities),
+                        build_activity_fingerprint(&presence.activities),
                     )
                 })
             });
-            if let Some((status, activity)) = initial_presence {
-                self.handle_presence_update(Some(target_guild_id), status, activity)
-                    .await;
+            if let Some((status, activity, activity_fingerprint)) = initial_presence {
+                self.handle_presence_update(
+                    Some(target_guild_id),
+                    status,
+                    activity,
+                    activity_fingerprint,
+                )
+                .await;
             }
             return;
         }
@@ -265,11 +293,12 @@ impl EventHandler for PresenceEventHandler {
                     (
                         presence.status,
                         extract_activity_context(&presence.activities),
+                        build_activity_fingerprint(&presence.activities),
                     )
                 })
             });
-            if let Some((status, activity)) = initial_presence {
-                self.handle_presence_update(Some(guild_id), status, activity)
+            if let Some((status, activity, activity_fingerprint)) = initial_presence {
+                self.handle_presence_update(Some(guild_id), status, activity, activity_fingerprint)
                     .await;
                 break;
             }
@@ -281,9 +310,24 @@ impl EventHandler for PresenceEventHandler {
             return;
         }
 
+        debug!(
+            user_id = new_data.user.id.get(),
+            guild_id = ?new_data.guild_id.map(GuildId::get),
+            status = %normalize_status(new_data.status),
+            activities_count = new_data.activities.len(),
+            activities = %summarize_activities(&new_data.activities),
+            "received presence update"
+        );
+
         let activity = extract_activity_context(&new_data.activities);
-        self.handle_presence_update(new_data.guild_id, new_data.status, activity)
-            .await;
+        let activity_fingerprint = build_activity_fingerprint(&new_data.activities);
+        self.handle_presence_update(
+            new_data.guild_id,
+            new_data.status,
+            activity,
+            activity_fingerprint,
+        )
+        .await;
     }
 }
 
@@ -361,6 +405,7 @@ fn build_initial_runtime_state(
         current_status: initial_status,
         current_guild_id: None,
         current_activity: None,
+        current_activity_fingerprint: None,
         reminder_anchor,
     }
 }
@@ -395,10 +440,7 @@ fn normalize_status(status: OnlineStatus) -> DiscordStatus {
 }
 
 fn extract_activity_context(activities: &[Activity]) -> Option<DiscordActivityContext> {
-    let activity = activities
-        .iter()
-        .find(|activity| activity.kind == ActivityType::Playing)
-        .or_else(|| activities.first())?;
+    let activity = pick_primary_activity(activities)?;
 
     Some(DiscordActivityContext {
         name: activity.name.clone(),
@@ -406,6 +448,24 @@ fn extract_activity_context(activities: &[Activity]) -> Option<DiscordActivityCo
         state: activity.state.clone(),
         steam_app_id: extract_steam_app_id(activity),
     })
+}
+
+fn pick_primary_activity(activities: &[Activity]) -> Option<&Activity> {
+    activities
+        .iter()
+        .find(|activity| activity.kind == ActivityType::Playing)
+        .or_else(|| {
+            activities.iter().find(|activity| {
+                matches!(
+                    activity.kind,
+                    ActivityType::Streaming
+                        | ActivityType::Listening
+                        | ActivityType::Watching
+                        | ActivityType::Competing
+                )
+            })
+        })
+        .or_else(|| activities.first())
 }
 
 fn extract_steam_app_id(activity: &Activity) -> Option<u32> {
@@ -432,6 +492,65 @@ fn make_status_cache_key(user_id: u64, guild_id: Option<u64>) -> String {
         Some(guild_id) => format!("discord:{user_id}:{guild_id}"),
         None => format!("discord:{user_id}:*"),
     }
+}
+
+fn summarize_activities(activities: &[Activity]) -> String {
+    if activities.is_empty() {
+        return "[]".to_string();
+    }
+
+    let parts: Vec<String> = activities
+        .iter()
+        .take(5)
+        .map(|activity| {
+            let app_id = activity.application_id.map(|id| id.get());
+            let assets = activity.assets.as_ref();
+            let large = assets.and_then(|a| a.large_image.as_deref()).unwrap_or("-");
+            let small = assets.and_then(|a| a.small_image.as_deref()).unwrap_or("-");
+            format!(
+                "{{kind={:?},name={},details={:?},state={:?},app_id={:?},large_image={},small_image={}}}",
+                activity.kind,
+                activity.name,
+                activity.details,
+                activity.state,
+                app_id,
+                large,
+                small
+            )
+        })
+        .collect();
+
+    if activities.len() > 5 {
+        format!("[{} ... +{} more]", parts.join(", "), activities.len() - 5)
+    } else {
+        format!("[{}]", parts.join(", "))
+    }
+}
+
+fn build_activity_fingerprint(activities: &[Activity]) -> String {
+    let mut parts = Vec::with_capacity(activities.len());
+    for activity in activities {
+        let app_id = activity.application_id.map(|id| id.get());
+        let assets = activity.assets.as_ref();
+        let large = assets.and_then(|a| a.large_image.as_deref()).unwrap_or("-");
+        let small = assets.and_then(|a| a.small_image.as_deref()).unwrap_or("-");
+        parts.push(format!(
+            "{:?}|{}|{:?}|{:?}|{:?}|{}|{}",
+            activity.kind, activity.name, activity.details, activity.state, app_id, large, small
+        ));
+    }
+    parts.join("||")
+}
+
+fn should_emit_presence_event(
+    status_changed: bool,
+    activity_changed: bool,
+    emit_on_activity_change: bool,
+    emit_initial_status: bool,
+    has_previous_status: bool,
+) -> bool {
+    let trigger_change = status_changed || (emit_on_activity_change && activity_changed);
+    trigger_change && (emit_initial_status || has_previous_status)
 }
 
 #[cfg(test)]
@@ -483,5 +602,21 @@ mod tests {
             }),
         );
         assert_eq!(key.as_deref(), Some("steam:570:online"));
+    }
+
+    #[test]
+    fn emit_on_activity_change_when_enabled() {
+        assert!(should_emit_presence_event(false, true, true, false, true));
+        assert!(!should_emit_presence_event(false, true, false, false, true));
+    }
+
+    #[test]
+    fn summarize_activities_empty() {
+        assert_eq!(summarize_activities(&[]), "[]");
+    }
+
+    #[test]
+    fn activity_fingerprint_empty_when_no_activities() {
+        assert!(build_activity_fingerprint(&[]).is_empty());
     }
 }

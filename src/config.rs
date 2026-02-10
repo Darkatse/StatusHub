@@ -51,6 +51,8 @@ pub struct DiscordSettings {
     pub guild_id: Option<u64>,
     #[serde(default)]
     pub emit_initial_status: bool,
+    #[serde(default = "default_emit_on_activity_change")]
+    pub emit_on_activity_change: bool,
 }
 
 impl DiscordSettings {
@@ -136,6 +138,10 @@ fn default_webhook_mode() -> WebhookMode {
 
 fn default_timeout_seconds() -> u64 {
     10
+}
+
+fn default_emit_on_activity_change() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -407,6 +413,7 @@ mod tests {
         settings.validate().expect("config should validate");
         assert_eq!(settings.discord.user_id, 123456789);
         assert!(settings.discord.emit_initial_status);
+        assert!(settings.discord.emit_on_activity_change);
         assert_eq!(settings.message.prefix.as_deref(), Some("[PREFIX]"));
         assert!(settings.steam.enabled);
         assert!(settings.reminder.enabled);

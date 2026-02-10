@@ -37,6 +37,7 @@ Copy-Item .\config.example.toml .\config.toml
 - `discord.bot_token`
 - `discord.user_id`
 - `discord.guild_id`（建议填写）
+- `discord.emit_on_activity_change`（建议 `true`）
 - `webhook.url`
 - `webhook.token`（若 webhook 要求鉴权）
 
@@ -63,7 +64,20 @@ prefix = "[系统事件]"
 suffix = "请根据以上信息执行自动化流程。"
 ```
 
-### 2) Steam 游戏信息增强
+### 2) Rich Presence 变化触发
+
+在 `config.toml` 中配置：
+
+```toml
+[discord]
+emit_on_activity_change = true
+```
+
+说明：
+- 开启后，状态不变但 Rich Presence 变化（如游戏、VSCode Presence）也会触发 webhook
+- OpenClaw `text` 会附加 `Activity / Details / State`，便于观察 Rich Presence 内容
+
+### 3) Steam 游戏信息增强
 
 在 `config.toml` 中配置：
 
@@ -81,7 +95,7 @@ db_cache_ttl_seconds = 86400
 
 当检测到 Discord 活动里存在 Steam app id（如 `steam:570`）时，会调用 Steam appdetails API 获取游戏名和简介，并附加到 OpenClaw webhook 的 `text` 中。若配置了 `api_key`，还会额外获取当前在线人数。
 
-### 3) 可选数据库缓存（通用）
+### 4) 可选数据库缓存（通用）
 
 ```toml
 [cache]
@@ -93,7 +107,7 @@ sqlite_path = "./data/statushub-cache.sqlite3"
 - `backend = "none"` 时禁用数据库缓存
 - `backend = "sqlite"` 时启用通用缓存服务（当前用于 Steam 数据与状态缓存，后续模块可复用）
 
-### 4) 持久化状态缓存
+### 5) 持久化状态缓存
 
 ```toml
 [state_cache]
@@ -105,7 +119,7 @@ path = "./data/status-state.json"
 - 启动时会恢复目标用户上一次状态，避免重启后重复触发错误状态变化
 - 写入文件的同时，如果开启了 SQLite 缓存，也会同步写入数据库
 
-### 5) 周期性提醒（30m / 1h / 1.5h ...）
+### 6) 周期性提醒（30m / 1h / 1.5h ...）
 
 ```toml
 [reminder]
@@ -120,6 +134,21 @@ check_interval_seconds = 30
 - `interval_minutes=30` 时，会在 30m、60m、90m... 推送
 - `steam_only=true` 时，仅在检测到 Steam 游戏活动（有 app id）时触发
 - 提醒消息会在 `text` 中附带已持续时长（elapsed）与提醒序号
+
+## VSCode Presence 排查
+
+如果你使用 VSCode Discord Presence 插件但没有触发：
+- 确认 `discord.emit_on_activity_change = true`
+- 确认 Bot 已启用并使用 `Presence Intent`
+- 确认目标账号在 Discord 用户设置中开启了活动展示（Display current activity）
+- 确认插件成功连接 Discord RPC（本机 Discord 客户端在运行）
+- 用 DEBUG 日志查看网关是否收到了活动：
+
+```powershell
+$env:RUST_LOG="statushub=debug,serenity=warn"; cargo run --release -- --config .\config.toml
+```
+
+你会看到 `received presence update` 日志，其中 `activities_count` 和 `activities` 会打印原始活动内容。
 
 ## 事件示例（generic_json）
 

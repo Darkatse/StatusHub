@@ -90,6 +90,10 @@ impl OpenClawWakeSender {
 
         parts.push(event.to_base_text());
 
+        if let Some(activity_line) = build_activity_section(event) {
+            parts.push(activity_line);
+        }
+
         if let Some(steam_line) = self.build_steam_section(event).await {
             parts.push(steam_line);
         }
@@ -128,6 +132,26 @@ impl OpenClawWakeSender {
     }
 }
 
+fn build_activity_section(event: &DiscordStatusChangedEvent) -> Option<String> {
+    let activity = event.activity.as_ref()?;
+    let mut line = format!("Activity: {}", activity.name);
+    if let Some(details) = activity
+        .details
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        line.push_str(&format!("\nDetails: {details}"));
+    }
+    if let Some(state) = activity
+        .state
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        line.push_str(&format!("\nState: {state}"));
+    }
+    Some(line)
+}
+
 fn normalize_optional_text(value: Option<String>) -> Option<String> {
     let text = value?;
     let trimmed = text.trim();
@@ -135,5 +159,33 @@ fn normalize_optional_text(value: Option<String>) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{DiscordActivityContext, DiscordStatus};
+
+    #[test]
+    fn build_activity_section_contains_fields() {
+        let event = DiscordStatusChangedEvent::new(
+            1,
+            None,
+            Some(DiscordStatus::Online),
+            DiscordStatus::Online,
+            Some(DiscordActivityContext {
+                name: "Visual Studio Code".to_string(),
+                details: Some("Editing src/main.rs".to_string()),
+                state: Some("Workspace: StatusHub".to_string()),
+                steam_app_id: None,
+            }),
+            None,
+        );
+
+        let section = build_activity_section(&event).expect("section should exist");
+        assert!(section.contains("Activity: Visual Studio Code"));
+        assert!(section.contains("Details: Editing src/main.rs"));
+        assert!(section.contains("State: Workspace: StatusHub"));
     }
 }
