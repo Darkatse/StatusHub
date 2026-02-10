@@ -5,6 +5,8 @@ StatusHub 是一个 Rust 编写的状态桥接程序。当前实现：
 - 监听指定 Discord 用户在线状态变更
 - 将状态变更推送到 webhook
 - 原生支持 OpenClaw `/hooks/wake`，并提供通用 JSON webhook 模式
+- 可选：检测 Steam 游戏活动并附加游戏简介
+- 可选：自定义 webhook `text` 的头部/尾部提示词
 
 ## 设计目标
 
@@ -45,6 +47,33 @@ cargo run --release -- --config .\config.toml
 - `openclaw_wake`：发送 payload `{ "text": "...", "mode": "now|next-heartbeat" }`
 - `generic_json`：发送完整事件 JSON，适配任意 webhook 接收端
 
+## 可选功能
+
+### 1) 自定义 text 头尾
+
+在 `config.toml` 中配置：
+
+```toml
+[message]
+prefix = "[系统事件]"
+suffix = "请根据以上信息执行自动化流程。"
+```
+
+### 2) Steam 游戏信息增强
+
+在 `config.toml` 中配置：
+
+```toml
+[steam]
+enabled = true
+api_key = "YOUR_STEAM_WEB_API_KEY"
+language = "schinese"
+description_max_chars = 240
+timeout_seconds = 8
+```
+
+当检测到 Discord 活动里存在 Steam app id（如 `steam:570`）时，会调用 Steam appdetails API 获取游戏名和简介，并附加到 OpenClaw webhook 的 `text` 中。若配置了 `api_key`，还会额外获取当前在线人数。
+
 ## 事件示例（generic_json）
 
 ```json
@@ -54,6 +83,11 @@ cargo run --release -- --config .\config.toml
   "guild_id": 987654321098765432,
   "previous_status": "offline",
   "current_status": "online",
+  "activity": {
+    "name": "Dota 2",
+    "details": "In Match",
+    "steam_app_id": 570
+  },
   "observed_at": "2026-02-10T01:35:20.123456Z"
 }
 ```

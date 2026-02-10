@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, Url};
 
-use crate::config::{WebhookMode, WebhookSettings};
+use crate::config::{MessageTemplateSettings, SteamSettings, WebhookMode, WebhookSettings};
 use crate::event::DiscordStatusChangedEvent;
 use crate::webhook::generic::GenericJsonSender;
 use crate::webhook::openclaw::OpenClawWakeSender;
@@ -18,11 +18,17 @@ pub trait WebhookSender: Send + Sync {
     async fn send(&self, event: &DiscordStatusChangedEvent) -> Result<()>;
 }
 
-pub fn build_sender(settings: &WebhookSettings) -> Result<Arc<dyn WebhookSender>> {
+pub fn build_sender(
+    settings: &WebhookSettings,
+    message: &MessageTemplateSettings,
+    steam: &SteamSettings,
+) -> Result<Arc<dyn WebhookSender>> {
     let shared = SharedWebhookClient::new(settings)?;
 
     match settings.mode {
-        WebhookMode::OpenclawWake => Ok(Arc::new(OpenClawWakeSender::new(shared, settings))),
+        WebhookMode::OpenclawWake => Ok(Arc::new(OpenClawWakeSender::new(
+            shared, settings, message, steam,
+        )?)),
         WebhookMode::GenericJson => Ok(Arc::new(GenericJsonSender::new(shared))),
     }
 }

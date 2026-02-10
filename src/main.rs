@@ -1,6 +1,7 @@
 mod config;
 mod discord;
 mod event;
+mod steam;
 mod webhook;
 
 use std::path::PathBuf;
@@ -34,8 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let settings = Settings::load_from_path(&cli.config)
         .with_context(|| format!("failed to load configuration from {}", cli.config.display()))?;
 
-    let sender =
-        webhook::build_sender(&settings.webhook).context("failed to setup webhook sender")?;
+    let sender = webhook::build_sender(&settings.webhook, &settings.message, &settings.steam)
+        .context("failed to setup webhook sender")?;
     run(settings, sender).await
 }
 

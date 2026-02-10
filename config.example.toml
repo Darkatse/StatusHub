@@ -20,3 +20,21 @@ wake_mode = "now"
 [webhook.headers]
 # 可选自定义请求头，会和 token 一起发送
 x-statushub-source = "discord-presence-monitor"
+
+[message]
+# 可选：发送到 webhook.text 前插入头部提示词
+prefix = ""
+# 可选：发送到 webhook.text 后追加尾部提示词
+suffix = ""
+
+[steam]
+# 可选功能：仅当检测到 Steam 游戏活动时，查询游戏信息并附加到 text
+enabled = true
+# 可选：Steam Web API Key。填写后会额外附加当前在线人数。
+api_key = "YOUR_STEAM_WEB_API_KEY"
+# Steam 商店 API 语言（例如 schinese / english）
+language = "schinese"
+# 简介最大字符数，超出会截断
+description_max_chars = 240
+# Steam API 请求超时（秒）
+timeout_seconds = 8

@@ -10,6 +10,10 @@ use serde::Deserialize;
 pub struct Settings {
     pub discord: DiscordSettings,
     pub webhook: WebhookSettings,
+    #[serde(default)]
+    pub message: MessageTemplateSettings,
+    #[serde(default)]
+    pub steam: SteamSettings,
 }
 
 impl Settings {
@@ -26,6 +30,7 @@ impl Settings {
     fn validate(&self) -> Result<()> {
         self.discord.validate()?;
         self.webhook.validate()?;
+        self.steam.validate()?;
         Ok(())
     }
 }
@@ -124,6 +129,71 @@ fn default_timeout_seconds() -> u64 {
     10
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct MessageTemplateSettings {
+    pub prefix: Option<String>,
+    pub suffix: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SteamSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub api_key: Option<String>,
+    #[serde(default = "default_steam_language")]
+    pub language: String,
+    #[serde(default = "default_steam_description_max_chars")]
+    pub description_max_chars: usize,
+    #[serde(default = "default_steam_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for SteamSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            language: default_steam_language(),
+            description_max_chars: default_steam_description_max_chars(),
+            timeout_seconds: default_steam_timeout_seconds(),
+        }
+    }
+}
+
+impl SteamSettings {
+    fn validate(&self) -> Result<()> {
+        if self.enabled && self.language.trim().is_empty() {
+            bail!("steam.language cannot be empty when steam.enabled=true");
+        }
+        if self
+            .api_key
+            .as_ref()
+            .is_some_and(|key| key.trim().is_empty())
+        {
+            bail!("steam.api_key cannot be empty when provided");
+        }
+        if self.description_max_chars == 0 {
+            bail!("steam.description_max_chars must be greater than 0");
+        }
+        if self.timeout_seconds == 0 {
+            bail!("steam.timeout_seconds must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+fn default_steam_language() -> String {
+    "schinese".to_string()
+}
+
+fn default_steam_description_max_chars() -> usize {
+    240
+}
+
+fn default_steam_timeout_seconds() -> u64 {
+    8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,12 +215,25 @@ mod tests {
 
             [webhook.openclaw]
             wake_mode = "now"
+
+            [message]
+            prefix = "[PREFIX]"
+            suffix = "[SUFFIX]"
+
+            [steam]
+            enabled = true
+            api_key = "steam-api-key"
+            language = "schinese"
+            description_max_chars = 200
+            timeout_seconds = 5
         "#;
 
         let settings: Settings = toml::from_str(raw).expect("config should parse");
         settings.validate().expect("config should validate");
         assert_eq!(settings.discord.user_id, 123456789);
         assert!(settings.discord.emit_initial_status);
+        assert_eq!(settings.message.prefix.as_deref(), Some("[PREFIX]"));
+        assert!(settings.steam.enabled);
     }
 
     #[test]

@@ -36,7 +36,20 @@ pub struct DiscordStatusChangedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_status: Option<DiscordStatus>,
     pub current_status: DiscordStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<DiscordActivityContext>,
     pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscordActivityContext {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steam_app_id: Option<u32>,
 }
 
 impl DiscordStatusChangedEvent {
@@ -45,6 +58,7 @@ impl DiscordStatusChangedEvent {
         guild_id: Option<u64>,
         previous_status: Option<DiscordStatus>,
         current_status: DiscordStatus,
+        activity: Option<DiscordActivityContext>,
     ) -> Self {
         Self {
             source: "discord.status",
@@ -52,11 +66,12 @@ impl DiscordStatusChangedEvent {
             guild_id,
             previous_status,
             current_status,
+            activity,
             observed_at: Utc::now(),
         }
     }
 
-    pub fn to_openclaw_text(&self) -> String {
+    pub fn to_base_text(&self) -> String {
         let old = self
             .previous_status
             .map(|status| status.to_string())
@@ -93,8 +108,9 @@ mod tests {
             Some(99),
             Some(DiscordStatus::Offline),
             DiscordStatus::Online,
+            None,
         );
-        let text = event.to_openclaw_text();
+        let text = event.to_base_text();
         assert!(text.contains("from offline to online"));
         assert!(text.contains("guild 99"));
     }
