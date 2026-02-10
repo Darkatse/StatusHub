@@ -9,13 +9,14 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: Build for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -26,10 +27,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: statushub.exe
             asset_name: statushub-windows-x86_64.exe
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact_name: statushub
-            asset_name: statushub-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: statushub
@@ -76,11 +73,7 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            mv statushub.exe ${{ matrix.asset_name }}
-          else
-            mv statushub ${{ matrix.asset_name }}
-          fi
+          mv ${{ matrix.artifact_name }} ${{ matrix.asset_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -108,6 +101,8 @@ jobs:
     name: Create Pre-release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout code
@@ -140,12 +135,10 @@ jobs:
             ## Available Binaries
             - `statushub-linux-x86_64` - Linux (x86_64)
             - `statushub-windows-x86_64.exe` - Windows (x86_64)
-            - `statushub-macos-x86_64` - macOS Intel (x86_64)
             - `statushub-macos-aarch64` - macOS Apple Silicon (ARM64)
           files: |
             artifacts/statushub-linux-x86_64/statushub-linux-x86_64
             artifacts/statushub-windows-x86_64.exe/statushub-windows-x86_64.exe
-            artifacts/statushub-macos-x86_64/statushub-macos-x86_64
             artifacts/statushub-macos-aarch64/statushub-macos-aarch64
           prerelease: true
           draft: false
