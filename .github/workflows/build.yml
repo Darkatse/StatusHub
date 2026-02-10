@@ -9,7 +9,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -103,3 +103,49 @@ jobs:
             echo "❌ Some platform builds failed"
             exit 1
           fi
+
+  release:
+    name: Create Pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pre-release-${{ steps.date.outputs.date }}
+          name: Pre-release Build ${{ steps.date.outputs.date }}
+          body: |
+            Automated pre-release build from commit ${{ github.sha }}
+            
+            **Commit:** ${{ github.event.head_commit.message }}
+            **Date:** ${{ steps.date.outputs.date }}
+            
+            ## Available Binaries
+            - `statushub-linux-x86_64` - Linux (x86_64)
+            - `statushub-windows-x86_64.exe` - Windows (x86_64)
+            - `statushub-macos-x86_64` - macOS Intel (x86_64)
+            - `statushub-macos-aarch64` - macOS Apple Silicon (ARM64)
+          files: |
+            artifacts/statushub-linux-x86_64/statushub-linux-x86_64
+            artifacts/statushub-windows-x86_64.exe/statushub-windows-x86_64.exe
+            artifacts/statushub-macos-x86_64/statushub-macos-x86_64
+            artifacts/statushub-macos-aarch64/statushub-macos-aarch64
+          prerelease: true
+          draft: false
